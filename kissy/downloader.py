@@ -19,6 +19,7 @@ class VideoQuality:
     P720 = "720p"
     P1080 = "1080p"
     P_HIGHEST = "highest"
+    P_LOWEST = "lowest"
 
 
 class Servers:
@@ -28,14 +29,14 @@ class Servers:
 
 
 async def get_rapidvideo_link(session: ClientSession, link: str, quality: str) -> str:
-    # link will looks like https://www.rapidvideo.com/e/G3HMJUXOY0
+    # link will look like https://www.rapidvideo.com/e/G3HMJUXOY0
     link = link.replace('/e/', '/d/')  # Replace from watch page to download page
     page, status = await retryable_get_request(session, link, 5, 5)
 
     if status != 200:
         raise RuntimeError("Bad bad")
     soup = BeautifulSoup(page, features="html.parser")
-    links = soup.find(class_='video').find_all('a', href=True)
+    links = soup.find(class_='title').find_all('a', href=True)
     if quality == VideoQuality.P_HIGHEST:
         desired_link = links[-1]
     else:
@@ -48,7 +49,7 @@ async def get_rapidvideo_link(session: ClientSession, link: str, quality: str) -
 
 
 async def get_nova_link(session: ClientSession, link: str, quality: str) -> str:
-    # link will looks like https://www.novelplanet.me/v/7qv7nqj4lwo
+    # link will look like https://www.novelplanet.me/v/7qv7nqj4lwo
     ep_id = link.split('/')[-1]
 
     async with session.post(NOVAPLANET_API + ep_id) as resp:
@@ -69,8 +70,25 @@ async def get_nova_link(session: ClientSession, link: str, quality: str) -> str:
     return desired_link
 
 
-async def get_mp4upload_link(link: str, quality: str) -> str:
-    pass
+async def get_mp4upload_link(session: ClientSession, link: str, quality: str) -> str:
+    # link will look like https://www.mp4upload.com/embed-jby2ms8ipq5d.html
+    link = link.replace('embed-', '')  # Replace from watch page to download page
+
+    # mp4upload only has one quality options
+    if quality in [VideoQuality.P_LOWEST, VideoQuality.P_HIGHEST]:
+        return link
+
+    page, status = await retryable_get_request(session, link, 5, 5)
+
+    if status != 200:
+        raise RuntimeError("Bad bad")
+    soup = BeautifulSoup(page, features="html.parser")
+    mp4_upload_resolution  = soup.find_all(class_='infoname')[1].next_sibling.text
+    mp4_upload_resolution = mp4_upload_resolution .split('x ')[-1] + 'p'  # 1280 x 720 > 720p
+    if quality != mp4_upload_resolution:
+        raise RuntimeError("Desired quality not found")
+
+    return link
 
 
 async def download_episode(session: ClientSession, name: str, link: str, path: str, total_bar: tqdm):
@@ -79,7 +97,8 @@ async def download_episode(session: ClientSession, name: str, link: str, path: s
     try:
         if os.path.isfile(file_target):
             raise FileExistsError(f'{name} already exists in the folder')
-        async with session.get(link) as resp:
+        req_method = session.post if Servers.MP4UPLOAD in link else session.get
+        async with req_method(link) as resp:
             if resp.status != 200:
                 raise RuntimeError(f'Cant download {name} from {link}')
 
@@ -106,7 +125,8 @@ async def download_episode(session: ClientSession, name: str, link: str, path: s
     return True
 
 # Ordered since we want to go from the best to worse server
+# mp4upload and nova get capcha on kissanime, still can't bypass that
 DOWNLOAD_METHODS = OrderedDict()
-DOWNLOAD_METHODS[Servers.NOVA] = get_nova_link
+#DOWNLOAD_METHODS[Servers.NOVA] = get_nova_link
 DOWNLOAD_METHODS[Servers.RAPIDVIDEO] = get_rapidvideo_link
-DOWNLOAD_METHODS[Servers.MP4UPLOAD] = get_mp4upload_link
+#DOWNLOAD_METHODS[Servers.MP4UPLOAD] = get_mp4upload_link

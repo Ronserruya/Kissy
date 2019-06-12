@@ -118,8 +118,8 @@ async def run(anime_url: str) -> None:
                 await asyncio.gather(*tasks)
 
 import sys
-sys.stdout = open('/dev/pts/18', 'w')
-sys.stderr = open('/dev/pts/18', 'w')
+sys.stdout = open('/dev/pts/2', 'w')
+sys.stderr = open('/dev/pts/2', 'w')
 
 uvloop.install()  # uvloop is much faster then the default asyncio loop
 asyncio.run(run('https://kissanime.ru/Anime/One-Punch-Man-Season-2'))
