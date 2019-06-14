@@ -1,17 +1,20 @@
 import os
+import traceback
+import asyncio
 from collections import OrderedDict
 
 import aiofiles
-from colorama import Fore
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 from aiohttp import ClientSession
 from aiohttp.streams import ChunkTupleAsyncStreamIterator
 
-from utils import retryable_get_request, BAR_WIDTH
+from errors import NoQualityFound
+from utils import retryable_get_request, BAR_WIDTH, get_connection, green, red
 
-
+DEBUG = False
 NOVAPLANET_API = 'https://www.novelplanet.me/api/source/'
+
 
 class VideoQuality:
     P360 = "360p"
@@ -40,11 +43,11 @@ async def get_rapidvideo_link(session: ClientSession, link: str, quality: str) -
     if quality == VideoQuality.P_HIGHEST:
         desired_link = links[-1]
     else:
-        desired_link = next((item for item in links if quality in item.text), None)  # Get the link for the specified quality
+        desired_link = next((item for item in links if quality in item.text),
+                            None)  # Get the link for the specified quality
 
         if desired_link is None:
-            raise RuntimeError("Desired quality not found")
-
+            raise NoQualityFound
     return desired_link['href']
 
 
@@ -65,7 +68,7 @@ async def get_nova_link(session: ClientSession, link: str, quality: str) -> str:
                             None)  # Get the link for the specified quality
 
         if desired_link is None:
-            raise RuntimeError("Desired quality not found")
+            raise NoQualityFound
 
     return desired_link
 
@@ -86,42 +89,51 @@ async def get_mp4upload_link(session: ClientSession, link: str, quality: str) ->
     mp4_upload_resolution  = soup.find_all(class_='infoname')[1].next_sibling.text
     mp4_upload_resolution = mp4_upload_resolution .split('x ')[-1] + 'p'  # 1280 x 720 > 720p
     if quality != mp4_upload_resolution:
-        raise RuntimeError("Desired quality not found")
+        raise NoQualityFound
 
     return link
 
 
-async def download_episode(session: ClientSession, name: str, link: str, path: str, total_bar: tqdm):
-    """Download the episode from the link to the path"""
+async def download_episode(session: ClientSession, name: str, link: str,
+                           path: str, total_bar: tqdm, pool: asyncio.Queue):
+    """Download the episode to local storage"""
     file_target = f'{path}/{name}.mp4'
+
     try:
-        if os.path.isfile(file_target):
-            raise FileExistsError(f'{name} already exists in the folder')
-        req_method = session.post if Servers.MP4UPLOAD in link else session.get
-        async with req_method(link) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f'Cant download {name} from {link}')
+        async with get_connection(pool):  # Limit ourself to max concurrent downloads
+            if os.path.isfile(file_target):
+                raise FileExistsError(f'{name} already exists in the folder')
+            req_method = session.post if Servers.MP4UPLOAD in link else session.get
+            async with req_method(link) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f'Got a bad response from the server for {name}: {resp.status}')
 
-            file_size = int(resp.headers.get('content-length'))
+                file_size = int(resp.headers.get('content-length'))
 
-            with tqdm(
-                    desc=name, total=file_size, unit='B',
-                    unit_scale=True, unit_divisor=1024, leave=False,
-                    ncols=BAR_WIDTH) as progress_bar:
+                with tqdm(
+                        desc=name, total=file_size, unit='B',
+                        unit_scale=True, unit_divisor=1024, leave=False,
+                        ncols=BAR_WIDTH) as progress_bar:
 
-                async with aiofiles.open(f'{path}/{name}', mode='wb') as file:
-                    async for chunk, _ in ChunkTupleAsyncStreamIterator(resp.content):
-                        await file.write(chunk)
-                        progress_bar.update(len(chunk))
+                    async with aiofiles.open(f'{path}/{name}', mode='wb') as file:
+                        async for chunk, _ in ChunkTupleAsyncStreamIterator(resp.content):
+                            await file.write(chunk)
+                            progress_bar.update(len(chunk))
+
+                    # Mark success and wait a bit before removing the bar
+                    progress_bar.set_postfix_str(green('✔️'))
+                    await asyncio.sleep(5)
     except Exception as e:
-        tqdm.write(f'{Fore.RED}Failed to download {name} cause {e} {Fore.RESET}')
+        tqdm.write(red(f'Failed to download {name} : {e} ❌'))
+        if DEBUG:
+            tqdm.write(red(''.join(traceback.format_exception(None, e, e.__traceback__))))
         try:
             os.remove(f'{path}/{name}')
         except FileNotFoundError:
             pass
         return False
-
-    total_bar.update(1)
+    finally:
+        total_bar.update(1)
     return True
 
 # Ordered since we want to go from the best to worse server

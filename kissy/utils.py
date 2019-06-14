@@ -2,6 +2,7 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 
+import colorama
 from aiohttp import ClientTimeout
 
 try:
@@ -35,3 +36,11 @@ async def get_connection(queue: asyncio.Queue):
         yield item
     finally:
         await queue.put(item)
+
+
+def green(text: str):
+    return ''.join([colorama.Fore.LIGHTGREEN_EX, text, colorama.Fore.RESET])
+
+
+def red(text: str):
+    return ''.join([colorama.Fore.RED, text, colorama.Fore.RESET])
